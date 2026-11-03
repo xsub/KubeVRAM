@@ -95,6 +95,7 @@ python3 -m unittest discover -s tests -v
 
 - [Architecture & Specification](./docs/architecture.md)
 - [Engineering Roadmap & TODO](./TODO.md)
+- [Companion Engineering Handbook: AiOps on K8S — Foundations and Practices](https://github.com/xsub/AiOps_on_K8S_Fundamentals_n_Practicies)
 
 ## License
 
