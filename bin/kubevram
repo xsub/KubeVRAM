@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""
+KubeVRAM: AI-Assisted Kubernetes Inference Bridge & Day-2 GPU Operations CLI.
+Executable binary wrapper.
+"""
+
+import os
+import sys
+
+# Ensure repository root is on sys.path so 'import kubevram' works seamlessly
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+from kubevram.cli import main
+
+if __name__ == "__main__":
+    sys.exit(main())
