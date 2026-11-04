@@ -2,15 +2,44 @@
 Security, RBAC, and Runtime Posture Auditor for Kubernetes GPU Workloads.
 
 Inspects Kubernetes nodes and inference pods to detect privilege escalations,
-missing runtime classes, excessive RBAC permissions, lack of gang scheduling,
-IPC/SHM constraints, and suboptimal NUMA affinity policies.
+explicit runtime mismatches, wildcard RBAC secret permissions across all ServiceAccounts,
+lack of gang scheduling on multi-GPU workloads, IPC/SHM constraints, and NUMA affinity gaps.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
 from kubevram.models import ClusterNode, InferencePod
+
+_GPU_RESOURCE_COUNT_RE = re.compile(
+    r"(?:nvidia\.com/[a-zA-Z0-9._\-]+|amd\.com/gpu|gpu)[ \t]*[:=][ \t]*(\d+)",
+    re.IGNORECASE,
+)
+_FALLBACK_COLON_INT_RE = re.compile(r":[ \t]*(\d+)\b")
+
+
+def parse_requested_gpu_count(requested_gpu_resource: str, gpu_indices: List[str]) -> int:
+    """
+    Parses the integer number of requested GPU / MIG devices from Pod resource strings
+    (e.g., 'nvidia.com/gpu: 3', 'nvidia.com/gpu:5', 'nvidia.com/mig-2g.20gb: 1') and
+    returns max(len(gpu_indices), parsed_count).
+    """
+    parsed_total = 0
+    raw = (requested_gpu_resource or "").strip()
+    if raw:
+        matches = _GPU_RESOURCE_COUNT_RE.findall(raw)
+        if matches:
+            parsed_total = sum(int(m) for m in matches)
+        elif raw.isdigit():
+            parsed_total = int(raw)
+        else:
+            fallback = _FALLBACK_COLON_INT_RE.findall(raw)
+            if fallback:
+                parsed_total = sum(int(m) for m in fallback)
+
+    return max(len(gpu_indices), parsed_total)
 
 
 def audit_cluster_rbac(
@@ -18,21 +47,16 @@ def audit_cluster_rbac(
 ) -> List[Dict[str, Any]]:
     """
     Inspects all nodes and pods and returns a list of security, RBAC, and runtime posture findings.
-
-    Each finding dictionary contains:
-    - resource: e.g., 'Pod/ai-inference/vllm-mixtral-8x22b-tp2' or 'Node/gpu-node-l40s-ts-03'
-    - namespace: str (pod namespace, or empty string for cluster-scoped resources like nodes)
-    - check_id: e.g., 'GPU-SEC-001', 'GPU-SEC-002', 'GPU-RBAC-003', 'GPU-SCHED-004', 'GPU-TOPO-005'
-    - severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'
-    - issue: clear description of the misconfiguration
-    - remediation: actionable fix description
-    - yaml_fix: short YAML snippet showing the declarative fix
     """
     findings: List[Dict[str, Any]] = []
+    nodes_by_name: Dict[str, ClusterNode] = {n.name: n for n in nodes}
 
     # 1. Audit Inference Pods
     for pod in pods:
         pod_resource = f"Pod/{pod.namespace}/{pod.name}"
+        container_name = pod.container_name or (pod.containers[0].name if pod.containers else "inference")
+        gpu_count = parse_requested_gpu_count(pod.requested_gpu_resource, pod.gpu_indices)
+        node = nodes_by_name.get(pod.node_name)
 
         # GPU-SEC-001: Privileged container execution
         if pod.privileged:
@@ -43,20 +67,19 @@ def audit_cluster_rbac(
                     "check_id": "GPU-SEC-001",
                     "severity": "CRITICAL",
                     "issue": (
-                        f"Pod '{pod.name}' runs with 'privileged: true' instead of using "
-                        "'runtimeClassName: nvidia'. Running privileged grants raw host root "
-                        "capabilities and bypasses container cgroup boundaries."
+                        f"Pod '{pod.name}' runs with 'privileged: true'. Running privileged grants "
+                        "host-level root capabilities and exposes ALL host GPU device nodes, bypassing "
+                        "device-plugin / CDI isolation boundaries."
                     ),
                     "remediation": (
-                        "Remove 'privileged: true' from container securityContext and configure "
-                        "'runtimeClassName: nvidia' to enable secure, unprivileged GPU device "
-                        "injection via NVIDIA Container Toolkit / CDI."
+                        "Remove 'privileged: true' from container securityContext and inject GPUs via "
+                        "NVIDIA Container Toolkit ('runtimeClassName: nvidia', nvidia-as-default runtime, or CDI)."
                     ),
                     "yaml_fix": (
                         "spec:\n"
                         "  runtimeClassName: nvidia\n"
                         "  containers:\n"
-                        f"  - name: {pod.name}\n"
+                        f"  - name: {container_name}\n"
                         "    securityContext:\n"
                         "      privileged: false\n"
                         "      allowPrivilegeEscalation: false\n"
@@ -67,29 +90,75 @@ def audit_cluster_rbac(
                 }
             )
 
-        # GPU-SEC-002: Missing or invalid NVIDIA runtimeClassName
-        if pod.runtime_class_name != "nvidia":
-            findings.append(
-                {
-                    "resource": pod_resource,
-                    "namespace": pod.namespace,
-                    "check_id": "GPU-SEC-002",
-                    "severity": "HIGH",
-                    "issue": (
-                        f"Pod '{pod.name}' requests GPU resource '{pod.requested_gpu_resource}' "
-                        f"but specifies runtimeClassName='{pod.runtime_class_name}' instead of 'nvidia'. "
-                        "Standard runc will fail to mount NVIDIA driver libraries and device nodes without privileged access."
-                    ),
-                    "remediation": (
-                        "Set 'spec.runtimeClassName: nvidia' in the Pod manifest to invoke the "
-                        "NVIDIA Container Runtime and CDI device injector."
-                    ),
-                    "yaml_fix": "spec:\n  runtimeClassName: nvidia",
-                }
+        # GPU-SEC-002: Explicit non-NVIDIA runtimeClassName or unverified missing runtimeClassName
+        # Note: Clusters using NVIDIA as the default containerd runtime or CDI work without
+        # Pod-level runtimeClassName: nvidia; do not false-positive on those configurations.
+        if gpu_count > 0:
+            rc = (pod.runtime_class_name or "").strip()
+            rc_lower = rc.lower()
+            node_supports_implicit_gpu = bool(
+                node is not None
+                and (
+                    node.default_runtime_is_nvidia
+                    or node.cdi_enabled
+                    or (node.runtime_class or "").strip().lower() in ("nvidia-default", "cdi", "none-cdi")
+                )
+            )
+            running_unprivileged_ok = (
+                not rc
+                and not pod.privileged
+                and pod.status == "Running"
+                and pod.restarts == 0
+                and pod.last_exit_code == 0
             )
 
-        # GPU-RBAC-003: Default ServiceAccount with wildcard secret access
-        if pod.service_account == "default" and pod.wildcard_secrets:
+            if rc and rc_lower not in ("nvidia", "nvidia-cdi", "nvidia-experimental"):
+                if not (node is not None and node.cdi_enabled):
+                    findings.append(
+                        {
+                            "resource": pod_resource,
+                            "namespace": pod.namespace,
+                            "check_id": "GPU-SEC-002",
+                            "severity": "HIGH",
+                            "issue": (
+                                f"Pod '{pod.name}' requests GPU resource '{pod.requested_gpu_resource}' "
+                                f"with non-NVIDIA runtimeClassName='{rc}' on a node without CDI enabled."
+                            ),
+                            "remediation": (
+                                "Set 'spec.runtimeClassName: nvidia' or enable CDI device injection on target GPU nodes."
+                            ),
+                            "yaml_fix": "spec:\n  runtimeClassName: nvidia",
+                        }
+                    )
+            elif not rc and not node_supports_implicit_gpu and not running_unprivileged_ok:
+                severity = "HIGH" if pod.privileged else "LOW"
+                findings.append(
+                    {
+                        "resource": pod_resource,
+                        "namespace": pod.namespace,
+                        "check_id": "GPU-SEC-002",
+                        "severity": severity,
+                        "issue": (
+                            f"Pod '{pod.name}' requests GPU resource '{pod.requested_gpu_resource}' without "
+                            "declaring 'runtimeClassName: nvidia' on a node not marked as NVIDIA-default or CDI-enabled."
+                        ),
+                        "remediation": (
+                            "Declare 'spec.runtimeClassName: nvidia' for portability, or verify that containerd "
+                            "configures 'nvidia' as the default runtime or enables CDI on target nodes."
+                        ),
+                        "yaml_fix": "spec:\n  runtimeClassName: nvidia",
+                    }
+                )
+
+        # GPU-RBAC-003: Wildcard secret access on ANY ServiceAccount (default or custom)
+        if pod.wildcard_secrets:
+            sa_name = pod.service_account or "default"
+            sa_context = (
+                "the namespace 'default' ServiceAccount"
+                if sa_name == "default"
+                else f"ServiceAccount '{sa_name}'"
+            )
+            recommended_sa = f"{pod.name}-restricted-sa" if sa_name != "default" else f"{pod.name}-sa"
             findings.append(
                 {
                     "resource": pod_resource,
@@ -97,33 +166,32 @@ def audit_cluster_rbac(
                     "check_id": "GPU-RBAC-003",
                     "severity": "CRITICAL",
                     "issue": (
-                        f"Pod '{pod.name}' runs under the default ServiceAccount while possessing "
-                        "wildcard secret access permissions ('*'). Untrusted inference inputs or prompt "
-                        "injection could lead to arbitrary code execution and full cluster secret exfiltration."
+                        f"Pod '{pod.name}' runs under {sa_context} with wildcard ('*') secret access. "
+                        "Remote code execution or SSRF in model-loading / tool-calling pipelines could "
+                        "exfiltrate all namespace or cluster secrets."
                     ),
                     "remediation": (
-                        "Create a dedicated, restricted ServiceAccount for inference workloads, "
-                        "set 'automountServiceAccountToken: false', and scope RBAC permissions to strictly "
-                        "required secrets via RoleBinding."
+                        f"Remove wildcard secret verbs/resourceNames from RoleBindings bound to '{sa_name}', "
+                        "scope secret access via explicit 'resourceNames', and set 'automountServiceAccountToken: false' "
+                        "if Kubernetes API access is unnecessary."
                     ),
                     "yaml_fix": (
                         "apiVersion: v1\n"
                         "kind: ServiceAccount\n"
                         "metadata:\n"
-                        f"  name: {pod.name}-sa\n"
+                        f"  name: {recommended_sa}\n"
                         f"  namespace: {pod.namespace}\n"
                         "automountServiceAccountToken: false\n"
                         "---\n"
                         "spec:\n"
-                        f"  serviceAccountName: {pod.name}-sa"
+                        f"  serviceAccountName: {recommended_sa}\n"
+                        "  automountServiceAccountToken: false"
                     ),
                 }
             )
 
-        # GPU-SCHED-004: Multi-GPU pod without Gang Scheduling
-        is_multi_gpu = len(pod.gpu_indices) > 1 or any(
-            f": {count}" in pod.requested_gpu_resource for count in ["2", "4", "8", "16"]
-        )
+        # GPU-SCHED-004: Multi-GPU pod (>= 2 GPUs) without Gang Scheduling
+        is_multi_gpu = gpu_count >= 2
         if is_multi_gpu and not pod.pod_group:
             findings.append(
                 {
@@ -132,13 +200,13 @@ def audit_cluster_rbac(
                     "check_id": "GPU-SCHED-004",
                     "severity": "MEDIUM",
                     "issue": (
-                        f"Multi-GPU distributed inference workload '{pod.name}' ({len(pod.gpu_indices)} GPUs) "
-                        "is scheduled without a 'pod_group' gang-scheduling declaration. In loaded clusters, "
-                        "partial scheduling of multi-GPU ranks causes deadlocks and GPU resource starvation."
+                        f"Multi-GPU workload '{pod.name}' ({gpu_count} GPUs) has no gang-scheduling "
+                        "'pod_group' configured. Under contention, partial GPU reservation across replicas "
+                        "or multi-node workers can cause scheduling deadlocks."
                     ),
                     "remediation": (
-                        "Configure Volcano or Coscheduling Gang Scheduling annotations "
-                        "('scheduling.k8s.io/group-name') or PodGroup CRD to ensure all-or-nothing scheduling."
+                        "Configure Volcano, Kueue, or Coscheduling gang-scheduling annotations "
+                        "('scheduling.k8s.io/group-name') for all-or-nothing placement."
                     ),
                     "yaml_fix": (
                         "metadata:\n"
@@ -159,13 +227,12 @@ def audit_cluster_rbac(
                     "check_id": "GPU-IPC-006",
                     "severity": "HIGH",
                     "issue": (
-                        f"Multi-GPU inference pod '{pod.name}' has only {pod.shm_size_mib} MiB /dev/shm "
-                        "(Kubernetes default 64 MiB). NCCL tensor-parallel communication rings require "
-                        "gigabytes of shared memory for P2P buffer staging, causing SIGBUS (Exit Code 135)."
+                        f"Multi-GPU pod '{pod.name}' ({gpu_count} GPUs) has only {pod.shm_size_mib} MiB /dev/shm "
+                        "(Kubernetes default is 64 MiB). NCCL shared-memory transport allocates multi-gigabyte IPC "
+                        "buffers and crashes with SIGBUS (Exit Code 135) when /dev/shm fills."
                     ),
                     "remediation": (
-                        "Mount an emptyDir volume with medium: Memory to /dev/shm with a size limit "
-                        "of at least 16Gi."
+                        "Mount an emptyDir volume with medium: Memory at /dev/shm (sizeLimit >= 8Gi–16Gi)."
                     ),
                     "yaml_fix": (
                         "spec:\n"
@@ -175,7 +242,7 @@ def audit_cluster_rbac(
                         "      medium: Memory\n"
                         "      sizeLimit: 16Gi\n"
                         "  containers:\n"
-                        f"  - name: {pod.name}\n"
+                        f"  - name: {container_name}\n"
                         "    volumeMounts:\n"
                         "    - mountPath: /dev/shm\n"
                         "      name: dshm"
@@ -197,12 +264,12 @@ def audit_cluster_rbac(
                     "severity": "MEDIUM",
                     "issue": (
                         f"GPU worker node '{node.name}' has numa_policy='{node.numa_policy}'. "
-                        "Without 'single-numa-node', Kubelet Topology Manager fails to align CPU core "
-                        "affinity with PCIe GPU sockets, leading to cross-socket UPI/QPI interconnect bottlenecks."
+                        "Without 'single-numa-node', Kubelet Topology Manager does not align CPU core "
+                        "affinity with PCIe GPU NUMA sockets."
                     ),
                     "remediation": (
                         "Configure Kubelet Topology Manager with 'topologyManagerPolicy: single-numa-node' "
-                        "and 'cpuManagerPolicy: static' in /var/lib/kubelet/config.yaml on the GPU worker node."
+                        "and 'cpuManagerPolicy: static' in KubeletConfiguration."
                     ),
                     "yaml_fix": (
                         "apiVersion: kubelet.config.k8s.io/v1beta1\n"

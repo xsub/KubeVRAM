@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from kubevram.models import ClusterNode, GPUDevice, InferencePod
+from kubevram.models import ClusterNode, ContainerState, GPUDevice, InferencePod
+
+MOCK_METRICS_TS = "2026-11-04T01:20:15Z"
 
 
 def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
@@ -31,6 +33,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             driver_version="550.90.07",
             cuda_version="12.4",
             runtime_class="nvidia",
+            measured_at=MOCK_METRICS_TS,
             gpus=[
                 GPUDevice(
                     index="0",
@@ -47,6 +50,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                     numa_node=0,
                     interconnect="NVSwitch Gen4 (900 GB/s)",
                     allocated_pods=["ai-inference/vllm-llama3-70b-fp8-prod-0"],
+                    measured_at=MOCK_METRICS_TS,
                 ),
                 GPUDevice(
                     index="1",
@@ -63,6 +67,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                     numa_node=0,
                     interconnect="NVSwitch Gen4 (900 GB/s)",
                     allocated_pods=["ai-inference/vllm-llama3-70b-unoptimized"],
+                    measured_at=MOCK_METRICS_TS,
                 ),
                 GPUDevice(
                     index="2",
@@ -79,6 +84,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                     numa_node=1,
                     interconnect="NVSwitch Gen4 (900 GB/s)",
                     allocated_pods=["ai-inference/vllm-mixtral-8x22b-tp2"],
+                    measured_at=MOCK_METRICS_TS,
                 ),
                 GPUDevice(
                     index="3",
@@ -95,6 +101,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                     numa_node=1,
                     interconnect="NVSwitch Gen4 (900 GB/s)",
                     allocated_pods=["ai-inference/vllm-mixtral-8x22b-tp2"],
+                    measured_at=MOCK_METRICS_TS,
                 ),
             ],
         ),
@@ -115,6 +122,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             driver_version="550.90.07",
             cuda_version="12.4",
             runtime_class="nvidia",
+            measured_at=MOCK_METRICS_TS,
             gpus=[
                 GPUDevice(
                     index="0/MIG-0 (3g.40gb)",
@@ -132,6 +140,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                     numa_node=0,
                     interconnect="MIG Isolated HBM2e",
                     allocated_pods=["ai-inference/vllm-llama3-8b-mig-prod"],
+                    measured_at=MOCK_METRICS_TS,
                 ),
                 GPUDevice(
                     index="0/MIG-1 (3g.40gb)",
@@ -149,6 +158,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                     numa_node=0,
                     interconnect="MIG Isolated HBM2e",
                     allocated_pods=["ai-inference/safetensors-loader-qwen-32b"],
+                    measured_at=MOCK_METRICS_TS,
                 ),
                 GPUDevice(
                     index="1/MIG-0 (2g.20gb)",
@@ -166,6 +176,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                     numa_node=1,
                     interconnect="MIG Isolated HBM2e",
                     allocated_pods=["rag-system/bge-reranker-v2-m3"],
+                    measured_at=MOCK_METRICS_TS,
                 ),
                 GPUDevice(
                     index="1/MIG-1 (2g.20gb)",
@@ -183,6 +194,8 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                     numa_node=1,
                     interconnect="MIG Isolated HBM2e",
                     allocated_pods=["rag-system/triton-whisper-large-v3"],
+                    measured_at=MOCK_METRICS_TS,
+                    xid_timestamp="2026-11-04T01:16:40Z",
                 ),
             ],
         ),
@@ -199,6 +212,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             driver_version="550.90.07",
             cuda_version="12.4",
             runtime_class="nvidia",
+            measured_at=MOCK_METRICS_TS,
             gpus=[
                 GPUDevice(
                     index="0 (Time-Sliced x4)",
@@ -218,6 +232,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                         "team-alpha/vllm-mistral-7b-tenant-a",
                         "team-beta/vllm-mistral-7b-tenant-b",
                     ],
+                    measured_at=MOCK_METRICS_TS,
                 ),
                 GPUDevice(
                     index="1 (Time-Sliced x4)",
@@ -234,6 +249,7 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
                     numa_node=1,
                     interconnect="PCIe Gen4 x16",
                     allocated_pods=["ml-sandbox/jupyter-pytorch-dev-01"],
+                    measured_at=MOCK_METRICS_TS,
                 ),
             ],
         ),
@@ -272,6 +288,13 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             privileged=False,
             runtime_class_name="nvidia",
             pod_group="llama3-70b-prod-group",
+            owner_kind="StatefulSet",
+            owner_name="vllm-llama3-70b-fp8-prod",
+            container_name="vllm",
+            containers=[
+                ContainerState(name="vllm", state="running", ready=True, restarts=0),
+            ],
+            metrics_measured_at=MOCK_METRICS_TS,
         ),
         # 2. Crashing Pod #1: CUDA VRAM OOM due to unoptimized --max-model-len=131072 on single 80GB GPU
         InferencePod(
@@ -304,6 +327,23 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             service_account="vllm-inference-sa",
             privileged=False,
             runtime_class_name="nvidia",
+            owner_kind="Deployment",
+            owner_name="vllm-llama3-70b",
+            container_name="vllm-engine",
+            containers=[
+                ContainerState(
+                    name="vllm-engine",
+                    state="waiting",
+                    ready=False,
+                    restarts=6,
+                    exit_code=1,
+                    termination_reason="Error",
+                    waiting_reason="CrashLoopBackOff",
+                    terminated_at="2026-11-04T01:18:14Z",
+                ),
+            ],
+            last_terminated_at="2026-11-04T01:18:14Z",
+            metrics_measured_at=MOCK_METRICS_TS,
         ),
         # 3. Crashing Pod #2: Multi-GPU NCCL /dev/shm Bus Error (64Mi default /dev/shm)
         InferencePod(
@@ -335,6 +375,23 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             service_account="default",
             privileged=True,
             runtime_class_name="nvidia",
+            owner_kind="Deployment",
+            owner_name="vllm-mixtral-8x22b",
+            container_name="vllm",
+            containers=[
+                ContainerState(
+                    name="vllm",
+                    state="waiting",
+                    ready=False,
+                    restarts=4,
+                    exit_code=135,
+                    termination_reason="Error",
+                    waiting_reason="CrashLoopBackOff",
+                    terminated_at="2026-11-04T01:19:05Z",
+                ),
+            ],
+            last_terminated_at="2026-11-04T01:19:05Z",
+            metrics_measured_at=MOCK_METRICS_TS,
         ),
         # 4. Crashing Pod #3: Kubernetes System RAM OOMKilled (Exit 137) vs Low GPU VRAM
         InferencePod(
@@ -366,6 +423,23 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             privileged=False,
             runtime_class_name="nvidia",
             wildcard_secrets=True,
+            owner_kind="Deployment",
+            owner_name="safetensors-loader-qwen",
+            container_name="loader",
+            containers=[
+                ContainerState(
+                    name="loader",
+                    state="waiting",
+                    ready=False,
+                    restarts=5,
+                    exit_code=137,
+                    termination_reason="OOMKilled",
+                    waiting_reason="CrashLoopBackOff",
+                    terminated_at="2026-11-04T01:17:09Z",
+                ),
+            ],
+            last_terminated_at="2026-11-04T01:17:09Z",
+            metrics_measured_at=MOCK_METRICS_TS,
         ),
         # 5. Crashing Pod #4: NVIDIA XID 95 Uncontained ECC Hardware Error on MIG Slice
         InferencePod(
@@ -392,6 +466,23 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             service_account="triton-sa",
             privileged=False,
             runtime_class_name="nvidia",
+            owner_kind="Deployment",
+            owner_name="triton-whisper",
+            container_name="tritonserver",
+            containers=[
+                ContainerState(
+                    name="tritonserver",
+                    state="waiting",
+                    ready=False,
+                    restarts=3,
+                    exit_code=1,
+                    termination_reason="Error",
+                    waiting_reason="CrashLoopBackOff",
+                    terminated_at="2026-11-04T01:16:41Z",
+                ),
+            ],
+            last_terminated_at="2026-11-04T01:16:41Z",
+            metrics_measured_at=MOCK_METRICS_TS,
         ),
         # 6. Healthy Tenant A on Time-Sliced L40S
         InferencePod(
@@ -420,6 +511,13 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             service_account="team-alpha-sa",
             privileged=False,
             runtime_class_name="nvidia",
+            owner_kind="Deployment",
+            owner_name="vllm-mistral-7b-alpha",
+            container_name="vllm",
+            containers=[
+                ContainerState(name="vllm", state="running", ready=True, restarts=0),
+            ],
+            metrics_measured_at=MOCK_METRICS_TS,
         ),
         # 7. Crashing Pod #5: Tenant B on Time-Sliced L40S (Time-Slicing Pre-Allocation VRAM Collision)
         InferencePod(
@@ -451,6 +549,23 @@ def get_mock_cluster_state() -> Tuple[List[ClusterNode], List[InferencePod]]:
             privileged=True,
             runtime_class_name=None,
             wildcard_secrets=True,
+            owner_kind="Deployment",
+            owner_name="vllm-mistral-7b-beta",
+            container_name="vllm",
+            containers=[
+                ContainerState(
+                    name="vllm",
+                    state="waiting",
+                    ready=False,
+                    restarts=9,
+                    exit_code=1,
+                    termination_reason="Error",
+                    waiting_reason="CrashLoopBackOff",
+                    terminated_at="2026-11-04T01:20:05Z",
+                ),
+            ],
+            last_terminated_at="2026-11-04T01:20:05Z",
+            metrics_measured_at=MOCK_METRICS_TS,
         ),
     ]
 

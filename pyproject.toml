@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kubevram"
-version = "0.1.0"
-description = "Terminal-centric Kubernetes GPU & LLM inference operations CLI: Linux-to-K8s bridge, CUDA VRAM vs. K8s OOM triage, vLLM KV-cache tuner, and MIG/MPS advisor."
+version = "0.2.0"
+description = "Terminal-centric Kubernetes GPU & LLM inference operations CLI: Linux-to-K8s bridge, CUDA VRAM vs. K8s OOM triage, static vLLM KV-cache sizer, and MIG/MPS advisor."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
